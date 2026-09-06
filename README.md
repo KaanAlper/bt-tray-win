@@ -20,9 +20,34 @@ Bu uygulama **Hands-Free AG Audio** PnP aygıtını enable/disable ederek profil
 
 ## Kurulum
 
+### Yol 1 — hazır exe
+
 [Releases](../../releases/latest) sayfasından `bt-tray.exe` indir ve çalıştır. Kurulum yok, tek dosya.
 
 PnP aygıtı enable/disable etmek yönetici yetkisi gerektirdiği için exe açılışta UAC sorar.
+
+Exe imzasız olduğu için SmartScreen "Bilinmeyen yayımcı" uyarısı verir → **Ek bilgi** → **Yine de çalıştır**.
+
+### Yol 2 — Smart App Control açıksa
+
+Windows 11'in **Akıllı Uygulama Denetimi (Smart App Control)** özelliği açıksa exe koşulsuz engellenir ve SmartScreen'den farklı olarak **"yine de çalıştır" seçeneği sunmaz**. Kullanıcı için istisna listesi yoktur; tek çözüm imzalı bir yayımcıdan gelmesi ya da SAC'in kapatılmasıdır.
+
+Bu durumda uygulamayı doğrudan Python ile çalıştır — Store'dan gelen Python imzalı olduğu için SAC engellemez:
+
+1. Bu repoyu indir: **Code → Download ZIP** → bir klasöre çıkar
+2. Microsoft Store'dan **Python** kur (yoksa `calistir.bat` seni Store'a yönlendirir)
+3. Klasördeki **`calistir.bat`** dosyasına çift tıkla
+
+Betik bağımlılıkları (`pystray`, `pillow`) kurar ve tray'i konsol penceresi açmadan başlatır. Uygulama açılışta yönetici izni ister.
+
+<details>
+<summary>SAC'i kapatmak (önerilmez)</summary>
+
+Windows Güvenliği → Uygulama ve tarayıcı denetimi → Akıllı Uygulama Denetimi ayarları → **Kapalı**.
+
+**Geri dönüşü yoktur:** SAC bir kez kapatıldığında yeniden açmak Windows'un sıfırdan kurulmasını gerektirir. Sadece tek bir uygulama için kapatmaya değmez.
+
+</details>
 
 ## Kullanım
 
