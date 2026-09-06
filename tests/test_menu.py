@@ -212,3 +212,106 @@ def test_poll_loop_survives_a_failing_refresh(tray, monkeypatch, tmp_path):
     tray._poll_loop()  # exception disari sizmamali
 
     assert "wmi patladi" in open(bt_tray.log_path(), encoding="utf-8").read()
+
+
+# --------------------------------------------------------------------------
+# Windows'a ozgu yollar (kod inceleme bulgulari icin regresyon testleri)
+# --------------------------------------------------------------------------
+
+def test_run_ps_forces_utf8_on_both_sides(monkeypatch):
+    """tr-TR'de OEM (cp857) ve ANSI (cp1254) codepage'leri farkli; ikisi de
+    UTF-8'e sabitlenmezse kulaklik adi mojibake olur ya da decode patlar."""
+    captured = {}
+
+    class FakeResult:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return FakeResult()
+
+    monkeypatch.setattr(bt_tray.subprocess, "run", fake_run)
+    bt_tray.run_ps("Write-Output 'x'")
+
+    assert captured["kwargs"]["encoding"] == "utf-8"
+    assert captured["kwargs"]["errors"] == "replace"
+    assert "text" not in captured["kwargs"]  # locale'e gore decode etmesin
+
+    import base64
+    script = base64.b64decode(captured["cmd"][-1]).decode("utf-16-le")
+    assert "[Console]::OutputEncoding" in script
+    assert script.startswith("try {")  # CLM'de patlamasin diye sarili
+
+
+def test_run_ps_logs_subprocess_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr(bt_tray.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("powershell yok")))
+
+    assert bt_tray.run_ps("x") == ""
+    assert "powershell yok" in open(bt_tray.log_path(), encoding="utf-8").read()
+
+
+def test_find_devices_logs_unparseable_output(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr(bt_tray, "run_ps", lambda *a, **k: "Get-CimInstance : hata")
+
+    assert bt_tray.find_hfp_devices() == []
+    log = open(bt_tray.log_path(), encoding="utf-8").read()
+    assert "Get-CimInstance" in log  # ham cikti log'a girmeli
+
+
+def test_refresh_never_touches_menu_from_background(tray, monkeypatch):
+    """pystray win32 _update_menu() HMENU'yu DestroyMenu ediyor; mesaj dongusu
+    ayni anda TrackPopupMenuEx ile onu gosteriyor olabilir."""
+    monkeypatch.setattr(tray.icon, "update_menu",
+                        lambda: pytest.fail("refresh() arka plandan menuye dokunmamali"))
+    tray.refresh(force=True)
+
+
+def test_apply_default_mode_silent_when_no_headset(tray, monkeypatch):
+    """Acilista kulaklik bagli degilse her boot'ta 'bulunamadi' balonu cikmasin."""
+    applied = []
+    monkeypatch.setattr(tray, "_apply_mode_worker", applied.append)
+
+    tray.state = bt_tray.MODE_NONE
+    tray.config["default_mode"] = bt_tray.MODE_MUSIC
+    tray.apply_default_mode()
+    assert applied == []
+
+    tray.state = bt_tray.MODE_MIC
+    tray.apply_default_mode()
+    assert applied == [bt_tray.MODE_MUSIC]
+
+
+def test_relaunch_as_admin_reports_uac_refusal(monkeypatch, tmp_path):
+    """ShellExecuteW <=32 donerse (UAC 'Hayir') uygulama sessizce kapanmamali."""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+
+    class FakeShell32:
+        def __init__(self, rc):
+            self.rc = rc
+
+        def ShellExecuteW(self, *args):
+            return self.rc
+
+    class FakeWindll:
+        def __init__(self, rc):
+            self.shell32 = FakeShell32(rc)
+
+    monkeypatch.setattr(bt_tray.ctypes, "windll", FakeWindll(5), raising=False)
+    assert bt_tray.relaunch_as_admin() is False
+    assert "rc=5" in open(bt_tray.log_path(), encoding="utf-8").read()
+
+    monkeypatch.setattr(bt_tray.ctypes, "windll", FakeWindll(42), raising=False)
+    assert bt_tray.relaunch_as_admin() is True
+
+
+def test_name_fallback_is_limited_to_bluetooth_devices():
+    """'Hands-Free' gecen alakasiz bir aygit HFP sanilmamali."""
+    assert "BTHENUM*" in bt_tray.PS_FIND
+    fallback = bt_tray.PS_FIND.split("if (-not $hf)")[1]
+    assert "$_.DeviceID -like 'BTHENUM*' -and" in fallback

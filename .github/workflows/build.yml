@@ -27,11 +27,29 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -q
 
+      # Testlerde run_ps her zaman monkeypatch'li; gercek PowerShell+codepage
+      # yolunu yalnizca bu adim dogruluyor (Turkce karakterli cikti).
+      - name: PowerShell encoding smoke test
+        shell: python
+        run: |
+          import sys
+          import bt_tray
+          out = bt_tray.run_ps("Write-Output 'sukru GIDA ozgur cig ISIK'")
+          print("stdout:", repr(out))
+          assert "sukru GIDA ozgur cig ISIK" in out, out
+          turkish = bt_tray.run_ps(
+              "Write-Output ([char]0x015F + [char]0x0131 + [char]0x011F "
+              "+ [char]0x00FC + [char]0x00F6 + [char]0x00E7)")
+          print("turkce:", repr(turkish))
+          assert turkish.strip() == "\u015f\u0131\u011f\u00fc\u00f6\u00e7", turkish
+          devices = bt_tray.find_hfp_devices()
+          print("HFP aygitlari:", devices)
+          assert isinstance(devices, list)
+
       - name: Build single-file exe
         run: >
           pyinstaller --onefile --noconsole --uac-admin
           --name bt-tray
-          --hidden-import PIL._tkinter_finder
           bt_tray.py
 
       - name: Upload artifact

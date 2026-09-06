@@ -106,28 +106,42 @@ def save_config(cfg: dict) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=2)
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("save_config", exc)
 
 
 # --------------------------------------------------------------------------
 # PowerShell koprusu
 # --------------------------------------------------------------------------
 
+# CREATE_NO_WINDOW ile acilan gizli konsol OEM codepage kullanir (tr-TR'de
+# cp857), Python ise text=True ile ANSI codepage'e (cp1254) gore decode eder.
+# Kulaklik adinda Latin-disi karakter varsa bu uyusmazlik UnicodeDecodeError
+# ya da mojibake uretir. Iki tarafi da UTF-8'e sabitliyoruz; Constrained
+# Language Mode'da [Console] erisimi engellenebildigi icin try/catch sarili.
+PS_PRELUDE = (
+    "try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }\n"
+)
+
+
 def run_ps(script: str, timeout: int = 30) -> str:
     """PowerShell'i -EncodedCommand ile calistirir (tirnak cehennemi yok)."""
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    encoded = base64.b64encode((PS_PRELUDE + script).encode("utf-16-le")).decode("ascii")
     try:
         result = subprocess.run(
             [
                 "powershell", "-NoProfile", "-NonInteractive",
                 "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded,
             ],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, timeout=timeout,
             creationflags=CREATE_NO_WINDOW,
+            encoding="utf-8", errors="replace",
         )
-    except Exception:
+    except Exception as exc:
+        log_error("run_ps", exc)
         return ""
+    if result.returncode != 0 and result.stderr:
+        log_error("run_ps stderr", RuntimeError(result.stderr.strip()[:2000]))
     return result.stdout or ""
 
 
@@ -139,7 +153,13 @@ $hf = $all | Where-Object {
     $_.DeviceID -like 'BTHENUM\{00001108*'
 }
 if (-not $hf) {
-    $hf = $all | Where-Object { $_.Name -like '*Hands-Free*' -or $_.Name -like '*Hands Free*' }
+    # UUID eslesmesi bosa duserse isimden ariyoruz, ama yine sadece Bluetooth
+    # aygitlari icinde: aksi halde 'Hands-Free' gecen alakasiz bir aygit
+    # (arac kiti vb.) HFP sanilabilir.
+    $hf = $all | Where-Object {
+        $_.DeviceID -like 'BTHENUM*' -and
+        ($_.Name -like '*Hands-Free*' -or $_.Name -like '*Hands Free*')
+    }
 }
 $hf | Select-Object DeviceID, Name, ConfigManagerErrorCode | ConvertTo-Json -Compress
 """
@@ -155,7 +175,8 @@ def find_hfp_devices() -> list[dict]:
         return []
     try:
         data = json.loads(raw)
-    except Exception:
+    except Exception as exc:
+        log_error(f"find_hfp_devices JSON parse: {raw[:500]!r}", exc)
         return []
     # ConvertTo-Json tek kayitta nesne, hic kayit yoksa `null` dondurur.
     if isinstance(data, dict):
@@ -240,11 +261,18 @@ def is_admin() -> bool:
         return False
 
 
-def relaunch_as_admin() -> None:
+def relaunch_as_admin() -> bool:
+    """Yonetici olarak yeniden baslatir. ShellExecuteW <=32 dondururse hatadir
+    (en yaygin sebep: kullanici UAC istemini reddetti)."""
     params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
     if not getattr(sys, "frozen", False):
         params = f'"{os.path.abspath(sys.argv[0])}" {params}'.strip()
-    ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+    rc = ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, params, None, 1)
+    if rc <= 32:
+        log_error("relaunch_as_admin", RuntimeError(f"ShellExecuteW rc={rc}"))
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -257,6 +285,10 @@ class BTTray:
         self.devices: list[dict] = []
         self.state = MODE_NONE
         self.lock = threading.Lock()
+        # pystray'in win32 backend'i _update_menu() icinde HMENU'yu
+        # DestroyMenu edip yeniden kuruyor ve bunu kilitlemiyor. Ikon/baslik
+        # yazmalarini kendi thread'lerimiz arasinda seri hale getiriyoruz.
+        self.ui_lock = threading.Lock()
         self.stop_event = threading.Event()
 
         self.icon = pystray.Icon(
@@ -302,7 +334,7 @@ class BTTray:
                     default_item(MODE_ASK),
                 ),
             ),
-            pystray.MenuItem("Yenile", lambda: self.refresh(force=True)),
+            pystray.MenuItem("Yenile", self.on_refresh),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Cikis", self.on_quit),
         )
@@ -341,12 +373,31 @@ class BTTray:
             log_error(f"apply_mode({mode})", exc)
 
     def set_default_mode(self, mode: str) -> None:
-        self.config["default_mode"] = mode
-        save_config(self.config)
-        self.icon.update_menu()
+        # update_menu() cagirmiyoruz: pystray menu aksiyonlarini Icon._handler
+        # ile sariyor ve callback'ten sonra kendisi zaten guncelliyor -- hem de
+        # mesaj dongusu thread'inde, yani yarissiz.
+        try:
+            self.config["default_mode"] = mode
+            save_config(self.config)
+        except Exception as exc:
+            log_error(f"set_default_mode({mode})", exc)
+
+    def on_refresh(self) -> None:
+        """Menuden gelen 'Yenile': WMI sorgusu mesaj dongusunu bloklamasin."""
+        threading.Thread(target=self._refresh_worker, daemon=True).start()
+
+    def _refresh_worker(self) -> None:
+        try:
+            self.refresh(force=True)
+        except Exception as exc:
+            log_error("on_refresh", exc)
 
     def apply_default_mode(self) -> None:
         mode = self.config.get("default_mode", MODE_MUSIC)
+        if self.state == MODE_NONE:
+            # Kulaklik bagli degil (acilista sik gorulur); her boot'ta
+            # gereksiz "bulunamadi" balonu cikarmayalim.
+            return
         if mode in (MODE_MUSIC, MODE_MIC) and self.state != mode:
             self._apply_mode_worker(mode)
 
@@ -363,9 +414,9 @@ class BTTray:
             return
         self.devices = devices
         self.state = state
-        self.icon.icon = make_icon(state)
-        self.icon.title = self._title()
-        self.icon.update_menu()
+        with self.ui_lock:
+            self.icon.icon = make_icon(state)
+            self.icon.title = self._title()
 
     def _title(self) -> str:
         if self.state == MODE_NONE:
@@ -378,8 +429,8 @@ class BTTray:
     def _notify(self, title: str, message: str) -> None:
         try:
             self.icon.notify(message, title)
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error("notify", exc)
 
     # -- dongu ------------------------------------------------------------
 
@@ -405,7 +456,17 @@ def main() -> int:
         print("Bu uygulama sadece Windows uzerinde calisir.", file=sys.stderr)
         return 1
     if not is_admin():
-        relaunch_as_admin()
+        if not relaunch_as_admin():
+            # UAC reddedildi. --noconsole'da hicbir iz kalmadigindan
+            # kullanici "cift tikladim, hicbir sey olmadi" ile bas basa kalir.
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                "bt-tray yonetici yetkisi olmadan calisamaz.\n\n"
+                "Bluetooth profilini degistirmek PnP aygitini enable/disable "
+                "etmeyi gerektiriyor ve bu islem yonetici izni istiyor.",
+                APP_NAME, 0x30,
+            )
+            return 1
         return 0
     try:
         BTTray().run()
