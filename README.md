@@ -55,6 +55,20 @@ Sağ tık → **Varsayılan mod** altından seçilir, `%APPDATA%\bt-tray-win\con
 
 `Win + R` → `shell:startup` → exe'nin kısayolunu bu klasöre koy. UAC istemini atlamak için Görev Zamanlayıcı'da "En yüksek ayrıcalıklarla çalıştır" seçili bir oturum açma görevi oluşturulabilir.
 
+## Sorun giderme
+
+Uygulama `--noconsole` ile derlendiği için hatalar ekrana düşmez, diske yazılır:
+
+```
+%APPDATA%\bt-tray-win\error.log
+```
+
+| Belirti | Olası sebep |
+|---|---|
+| İkon gri kalıyor (kulaklık bağlıyken) | Aygıt tespit filtresi bu kulaklığı yakalamıyor — `error.log` ve `Get-CimInstance Win32_PnPEntity \| Where Name -like '*Hands*'` çıktısıyla issue aç |
+| "Profil değiştirilemedi" bildirimi | Yönetici yetkisi yok, UAC istemi reddedilmiş olabilir |
+| Ses hâlâ bozuluyor | OBS ayrıca kulaklığı monitoring device olarak kullanıyor olabilir: OBS → Ayarlar → Gelişmiş → Ses İzleme Aygıtı'nı kontrol et |
+
 ## Bilinen sınırlar
 
 - Bluetooth'ta "hem stereo ses hem mikrofon" fiziksel olarak mümkün değildir. Yayın yaparken kulaklık mikrofonu isteniyorsa ses kalitesinden feragat edilir; alternatifi ayrı bir mikrofon kullanmaktır.

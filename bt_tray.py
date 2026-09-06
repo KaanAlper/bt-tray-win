@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import datetime
 import json
 import os
 import subprocess
 import sys
 import threading
 import time
+import traceback
 
 from PIL import Image, ImageDraw, ImageFont
 import pystray
@@ -61,9 +63,30 @@ MODE_LABELS = {
 # Config
 # --------------------------------------------------------------------------
 
-def config_path() -> str:
+def data_dir() -> str:
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(base, APP_NAME, "config.json")
+    return os.path.join(base, APP_NAME)
+
+
+def config_path() -> str:
+    return os.path.join(data_dir(), "config.json")
+
+
+def log_path() -> str:
+    return os.path.join(data_dir(), "error.log")
+
+
+def log_error(context: str, exc: BaseException) -> None:
+    """--noconsole ile derlenen exe'de traceback ekrana dusmez; diske yazar."""
+    try:
+        os.makedirs(data_dir(), exist_ok=True)
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        with open(log_path(), "a", encoding="utf-8") as fh:
+            fh.write(f"\n===== {stamp} | {context} =====\n")
+            fh.write("".join(traceback.format_exception(
+                type(exc), exc, exc.__traceback__)))
+    except Exception:
+        pass
 
 
 def load_config() -> dict:
@@ -134,20 +157,31 @@ def find_hfp_devices() -> list[dict]:
         data = json.loads(raw)
     except Exception:
         return []
+    # ConvertTo-Json tek kayitta nesne, hic kayit yoksa `null` dondurur.
     if isinstance(data, dict):
         data = [data]
+    elif not isinstance(data, list):
+        return []
     return [d for d in data if isinstance(d, dict) and d.get("DeviceID")]
 
 
-def set_devices_enabled(devices: list[dict], enabled: bool) -> None:
+def set_devices_enabled(devices: list[dict], enabled: bool) -> str:
+    """Aygitlari enable/disable eder, PowerShell hata metnini dondurur ('' = temiz)."""
     if not devices:
-        return
+        return ""
     verb = "Enable-PnpDevice" if enabled else "Disable-PnpDevice"
-    lines = ["$ErrorActionPreference = 'SilentlyContinue'"]
+    lines = ["$ErrorActionPreference = 'Stop'", "$errs = @()"]
     for dev in devices:
         device_id = str(dev["DeviceID"]).replace("'", "''")
-        lines.append(f"{verb} -InstanceId '{device_id}' -Confirm:$false")
-    run_ps("\n".join(lines), timeout=60)
+        lines.append(
+            f"try {{ {verb} -InstanceId '{device_id}' -Confirm:$false }} "
+            f"catch {{ $errs += $_.Exception.Message }}"
+        )
+    lines.append("$errs -join ' | '")
+    out = run_ps("\n".join(lines), timeout=60).strip()
+    if out:
+        log_error(f"{verb} basarisiz", RuntimeError(out))
+    return out
 
 
 def categorize(devices: list[dict]) -> str:
@@ -235,11 +269,13 @@ class BTTray:
     # -- menu -------------------------------------------------------------
 
     def _build_menu(self) -> pystray.Menu:
-        def default_item(mode: str):
+        def default_item(mode: str) -> pystray.MenuItem:
+            # pystray action'lari en fazla 2 argumanli olabilir; 0 argumanli
+            # closure kullaniyoruz ki `mode` her cagri icin dogru baglansin.
             return pystray.MenuItem(
                 MODE_LABELS[mode],
-                lambda _icon, _item, m=mode: self.set_default_mode(m),
-                checked=lambda _item, m=mode: self.config.get("default_mode") == m,
+                lambda: self.set_default_mode(mode),
+                checked=lambda _item: self.config.get("default_mode") == mode,
                 radio=True,
             )
 
@@ -281,20 +317,28 @@ class BTTray:
         threading.Thread(target=self._apply_mode_worker, args=(mode,), daemon=True).start()
 
     def _apply_mode_worker(self, mode: str) -> None:
-        with self.lock:
-            devices = self.devices or find_hfp_devices()
-            if not devices:
-                self._notify("Bluetooth kulaklik bulunamadi",
-                             "Kulaklik bagli mi? Sag tik > Yenile.")
-                return
-            set_devices_enabled(devices, enabled=(mode == MODE_MIC))
-        time.sleep(1.0)
-        self.refresh(force=True)
-        self._notify(
-            MODE_LABELS[mode],
-            "Stereo kilitli, mikrofon kapali." if mode == MODE_MUSIC
-            else "Mikrofon acik, ses kalitesi dusuk.",
-        )
+        try:
+            with self.lock:
+                devices = self.devices or find_hfp_devices()
+                if not devices:
+                    self._notify("Bluetooth kulaklik bulunamadi",
+                                 "Kulaklik bagli mi? Sag tik > Yenile.")
+                    return
+                error = set_devices_enabled(devices, enabled=(mode == MODE_MIC))
+            time.sleep(1.0)
+            self.refresh(force=True)
+            if error:
+                self._notify("Profil degistirilemedi",
+                             "Yonetici olarak calistigindan emin ol. "
+                             f"Ayrinti: {log_path()}")
+            else:
+                self._notify(
+                    MODE_LABELS[mode],
+                    "Stereo kilitli, mikrofon kapali." if mode == MODE_MUSIC
+                    else "Mikrofon acik, ses kalitesi dusuk.",
+                )
+        except Exception as exc:
+            log_error(f"apply_mode({mode})", exc)
 
     def set_default_mode(self, mode: str) -> None:
         self.config["default_mode"] = mode
@@ -340,13 +384,16 @@ class BTTray:
     # -- dongu ------------------------------------------------------------
 
     def _poll_loop(self) -> None:
-        self.refresh(force=True)
-        self.apply_default_mode()
+        try:
+            self.refresh(force=True)
+            self.apply_default_mode()
+        except Exception as exc:
+            log_error("ilk tarama", exc)
         while not self.stop_event.wait(POLL_SECONDS):
             try:
                 self.refresh()
-            except Exception:
-                pass
+            except Exception as exc:
+                log_error("poll", exc)
 
     def run(self) -> None:
         self.icon.run(setup=lambda _icon: threading.Thread(
@@ -360,7 +407,17 @@ def main() -> int:
     if not is_admin():
         relaunch_as_admin()
         return 0
-    BTTray().run()
+    try:
+        BTTray().run()
+    except Exception as exc:
+        log_error("main", exc)
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            f"bt-tray beklenmedik bir hatayla kapandi.\n\n{exc}\n\n"
+            f"Ayrinti: {log_path()}",
+            APP_NAME, 0x10,
+        )
+        return 1
     return 0
 
 
