@@ -20,6 +20,20 @@ Bu uygulama **Hands-Free AG Audio** PnP aygıtını enable/disable ederek profil
 
 ## Kurulum
 
+### Tek satır (önerilen)
+
+PowerShell'e yapıştır (yönetici gerekmez):
+
+```powershell
+irm https://raw.githubusercontent.com/KaanAlper/bt-tray-win/main/install.ps1 | iex
+```
+
+Son sürümü indirir, SHA-256'sını doğrular, `%LOCALAPPDATA%\Programs\bt-tray-win` içine kurar, Başlat menüsüne kısayol ve **Ayarlar > Uygulamalar**'a kaldırıcı ekler. Aynı komut güncelleme yapar; bir hata ya da Ctrl+C olursa her şey eski haline döner. Kaldırmak için Ayarlar > Uygulamalar > bt-tray, ya da:
+
+```powershell
+$env:BTTRAY_UNINSTALL = 1; irm https://raw.githubusercontent.com/KaanAlper/bt-tray-win/main/install.ps1 | iex
+```
+
 ### Yol 1 — hazır exe
 
 [Releases](../../releases/latest) sayfasından `bt-tray.exe` indir ve çalıştır. Kurulum yok, tek dosya.
@@ -114,7 +128,9 @@ pip install -r requirements.txt pyinstaller
 pyinstaller --onefile --noconsole --uac-admin --name bt-tray bt_tray.py
 ```
 
-CI (`.github/workflows/build.yml`) `windows-latest` üzerinde aynı komutu çalıştırır; `v*` etiketi push edildiğinde exe'yi Releases'a yükler.
+Paketi (`dist\bt-tray.exe` + `install.ps1`'in kurduğu zip) tek komutla: `pwsh ./tools/build.ps1 -Version 1.2.3`.
+
+CI (`.github/workflows/build.yml`) her push'ta `windows-latest` üzerinde testleri, paketi ve `install.ps1`'in kur / güncelle / kaldır denemesini çalıştırır. Sürüm yayımlamak için **Actions > release > Run workflow**: sürüm, son sürümden bu yana gelen commit'lerden hesaplanır (`feat:` → minor, `fix:` → patch, `tip!:` ya da `BREAKING CHANGE:` → major; `bump` ile elle seçilebilir).
 
 ## Linux karşılığı
 
