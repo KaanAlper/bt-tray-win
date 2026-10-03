@@ -28,6 +28,8 @@ PowerShell'e yapıştır (yönetici gerekmez):
 irm https://raw.githubusercontent.com/KaanAlper/bt-tray-win/main/install.ps1 | iex
 ```
 
+**Pencereli kurulum:** [**bt-tray-Setup-x64.exe**](https://github.com/KaanAlper/bt-tray-win/releases/latest/download/bt-tray-Setup-x64.exe) (32-bit Windows için [bt-tray-Setup-x86.exe](https://github.com/KaanAlper/bt-tray-win/releases/latest/download/bt-tray-Setup-x86.exe)) — aynı kurulumu düğmelerle yapar: dil seçimi, ilerleme, iptal edince geri alma; kuruluysa **Güncelle / Onar / Kaldır** sunar.
+
 Son sürümü indirir, SHA-256'sını doğrular, `%LOCALAPPDATA%\Programs\bt-tray-win` içine kurar, Başlat menüsüne kısayol ve **Ayarlar > Uygulamalar**'a kaldırıcı ekler. Aynı komut güncelleme yapar; bir hata ya da Ctrl+C olursa her şey eski haline döner. Kaldırmak için Ayarlar > Uygulamalar > bt-tray, ya da:
 
 ```powershell

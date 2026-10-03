@@ -57,6 +57,13 @@ jobs:
           if ((Test-Path $dir) -or (Test-Path $key)) { throw 'uninstall left files behind' }
           'install / update / uninstall ok'
 
+      # The windowed setup app (installer/gui): builds both exes, draws every page and proves it starts and talks to install.ps1
+      - name: Setup app - build x64 / x86, draw the pages, install and remove it through the window
+        shell: pwsh
+        run: |
+          $env:BTTRAY_SOURCE = (Resolve-Path 'dist/bt-tray-*-windows-x64.zip').Path
+          ./installer/gui/build.ps1 -Out dist -Shots -Smoke install
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -65,3 +72,6 @@ jobs:
             dist/bt-tray.exe
             dist/bt-tray-*-windows-x64.zip
             dist/*.sha256
+            dist/bt-tray-Setup-*.exe
+            dist/shots/*.png
+            dist/smoke/*
